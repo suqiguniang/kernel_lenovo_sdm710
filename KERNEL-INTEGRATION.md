@@ -60,7 +60,9 @@ Droidspaces v6.6.0 为 non-GKI 内核提供两个补丁（`Documentation/resourc
 
 ## CI 构建
 
-`.github/workflows/build-kernel.yml`：`ubuntu-22.04` + `gcc-aarch64-linux-gnu`（GCC 11 交叉）。
+`.github/workflows/build-kernel.yml`：`ubuntu-22.04` runner + `ubuntu:20.04` 容器 + `gcc-aarch64-linux-gnu`（GCC 9.4 交叉）。
+
+选 GCC 9 的理由：本树多个 vendor 驱动自带 `-Werror`（已实测触发失败的有 `drivers/staging/qcacld-3.0/Kbuild:1661`、`techpack/audio/asoc/codecs/tfa98xx/Kbuild:82`），GCC 11 新增的 `-Warray-parameter`、加强的 `-Wmaybe-uninitialized` 会被这些 `-Werror` 提升为错误。而 `KCFLAGS` 在 kbuild 里排在模块 `ccflags` 之前（`scripts/Makefile.lib:104` 的 `orig_c_flags`），无法用 `-Wno-error` 反覆盖，因此退回与内核年代匹配的 GCC 9，而不是去改 vendor 源码。
 
 - 触发：推送 `droidspaces` 分支 / 手动 `workflow_dispatch`
 - 流程：`kunlun2_defconfig` → **断言必需配置项全为 `=y`（缺一即失败）** → `Image.gz` → `Image.gz-dtb`（best effort，设备树在独立仓，可能不含 kunlun2 dtb）→ 上传产物
@@ -69,7 +71,7 @@ Droidspaces v6.6.0 为 non-GKI 内核提供两个补丁（`Documentation/resourc
 
 ## 已知风险 / 未验证项
 
-- **未在本机编译**（按约定由 GitHub Actions 编译），首次 CI 结果即为第一手编译证据；4.9 + GCC 11 组合若报错，优先怀疑工具链而非补丁。
+- **未在本机编译**（按约定由 GitHub Actions 编译），CI 结果是第一手编译证据。首轮用 GCC 11 失败于 vendor 驱动的 `-Werror`，现改用 GCC 9.4（见上）；若再报错，仍优先怀疑工具链/老代码，而非补丁。
 - `Image.gz-dtb` 依赖设备树，而本树的 `arch/arm64/boot/dts/qcom/Makefile` 中**没有** kunlun2 的 `dtb-$(CONFIG_ARCH_SDM670)` 条目（设备树在独立仓库），因此该产物可能不含本机 dtb；`Image.gz` 是主产物。
 - 启用 `MEMCG` / `USER_NS` / `DEVTMPFS` 改变了 `task_struct` 等核心结构布局，**必须**与同一份内核一起重编所有 vendor 模块；直接套用旧预编译模块会导致加载失败或开机异常。
 - Droidspaces 的 `droidspaces check` 与 SukiSU 管理器的真机验证尚未进行。
