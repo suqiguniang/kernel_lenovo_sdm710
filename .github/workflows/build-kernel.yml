@@ -38,35 +38,35 @@ jobs:
           set -eu
           missing=0
           for c in \
-            SYSVIPC
-            POSIX_MQUEUE
-            IPC_NS
-            UTS_NS
-            PID_NS
-            USER_NS
-            SECCOMP
-            SECCOMP_FILTER
-            CGROUPS
-            CGROUP_DEVICE
-            CGROUP_PIDS
-            MEMCG
-            CGROUP_SCHED
-            FAIR_GROUP_SCHED
-            CGROUP_FREEZER
-            CGROUP_NET_PRIO
-            DEVTMPFS
-            OVERLAY_FS
-            TMPFS_POSIX_ACL
-            TMPFS_XATTR
-            NET_NS
-            VETH
-            BRIDGE
-            NF_TABLES
-            IP_NF_TARGET_MASQUERADE
-            NF_NAT_REDIRECT
-            IP_ADVANCED_ROUTER
-            IP_MULTIPLE_TABLES
-            IP_SET
+            SYSVIPC \
+            POSIX_MQUEUE \
+            IPC_NS \
+            UTS_NS \
+            PID_NS \
+            USER_NS \
+            SECCOMP \
+            SECCOMP_FILTER \
+            CGROUPS \
+            CGROUP_DEVICE \
+            CGROUP_PIDS \
+            MEMCG \
+            CGROUP_SCHED \
+            FAIR_GROUP_SCHED \
+            CGROUP_FREEZER \
+            CGROUP_NET_PRIO \
+            DEVTMPFS \
+            OVERLAY_FS \
+            TMPFS_POSIX_ACL \
+            TMPFS_XATTR \
+            NET_NS \
+            VETH \
+            BRIDGE \
+            NF_TABLES \
+            IP_NF_TARGET_MASQUERADE \
+            NF_NAT_REDIRECT \
+            IP_ADVANCED_ROUTER \
+            IP_MULTIPLE_TABLES \
+            IP_SET \
             NETFILTER_XT_SET
           do
             if grep -qx "CONFIG_$c=y" out/.config; then
