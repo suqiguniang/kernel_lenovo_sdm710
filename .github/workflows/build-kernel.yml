@@ -1,0 +1,103 @@
+name: "Build kunlun2 kernel (droidspaces - Droidspaces v6.6.0)"
+
+on:
+  push:
+    branches: [ droidspaces ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            kmod cpio xz-utils zstd gcc-aarch64-linux-gnu
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Generate kunlun2 defconfig
+        run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out kunlun2_defconfig
+
+      - name: Assert required config symbols
+        run: |
+          set -eu
+          missing=0
+          for c in \
+            SYSVIPC
+            POSIX_MQUEUE
+            IPC_NS
+            UTS_NS
+            PID_NS
+            USER_NS
+            SECCOMP
+            SECCOMP_FILTER
+            CGROUPS
+            CGROUP_DEVICE
+            CGROUP_PIDS
+            MEMCG
+            CGROUP_SCHED
+            FAIR_GROUP_SCHED
+            CGROUP_FREEZER
+            CGROUP_NET_PRIO
+            DEVTMPFS
+            OVERLAY_FS
+            TMPFS_POSIX_ACL
+            TMPFS_XATTR
+            NET_NS
+            VETH
+            BRIDGE
+            NF_TABLES
+            IP_NF_TARGET_MASQUERADE
+            NF_NAT_REDIRECT
+            IP_ADVANCED_ROUTER
+            IP_MULTIPLE_TABLES
+            IP_SET
+            NETFILTER_XT_SET
+          do
+            if grep -qx "CONFIG_$c=y" out/.config; then
+              echo "ok      CONFIG_$c=y"
+            else
+              echo "MISSING CONFIG_$c=y  ->  $(grep -E "^(CONFIG_$c=|# CONFIG_$c is not set)" out/.config || echo '<symbol absent>')"
+              missing=$((missing+1))
+            fi
+          done
+          test "$missing" -eq 0
+
+      - name: Build Image.gz
+        run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" KCFLAGS="-fno-PIE" Image.gz
+
+      - name: Build appended-DTB image (best effort)
+        continue-on-error: true
+        run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" KCFLAGS="-fno-PIE" Image.gz-dtb
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          for f in out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image; do
+            [ -f "$f" ] && cp "$f" "dist/$(basename "$f")" && echo "collected $f"
+          done
+          [ -f out/.config ] && cp out/.config dist/kunlun2-defconfig.resolved
+          ls -l dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-kunlun2-4.9.317
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
