@@ -19,6 +19,13 @@ jobs:
       image: ubuntu:20.04
     timeout-minutes: 240
     steps:
+      - name: Prepare container (git is required by actions/checkout)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+          git --version
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -30,7 +37,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
-            kmod cpio xz-utils zstd ca-certificates gcc-aarch64-linux-gnu
+            kmod cpio xz-utils zstd gcc-aarch64-linux-gnu
           # 4.9 vendor drivers carry their own -Werror; GCC 11+ promotes new
           # warnings (-Warray-parameter, ...) to errors, GCC 9 does not.
           aarch64-linux-gnu-gcc --version | head -1
