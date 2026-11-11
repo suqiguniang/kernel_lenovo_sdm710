@@ -106,6 +106,18 @@ jobs:
           [ -f out/.config ] && cp out/.config dist/kunlun2-defconfig.resolved
           ls -l dist
 
+      # 用原厂 boot.img 的 payload（ramdisk/second/dtb/对齐区，逐字节）重新封装，
+      # 只替换内核；参数全部来自原镜像 header，不猜 base/offset。
+      - name: Pack flashable boot.img
+        run: |
+          python3 bootimg/bootimg.py repack-from-payload \
+            dist/boot.img out/arch/arm64/boot/Image.gz \
+            --payload bootimg/stock-payload.bin \
+            --meta bootimg/bootmeta.json \
+            --pad 67108864
+          python3 bootimg/bootimg.py info dist/boot.img
+          ls -l dist/boot.img
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

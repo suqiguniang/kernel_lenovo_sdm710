@@ -70,6 +70,20 @@ Droidspaces v6.6.0 为 non-GKI 内核提供两个补丁（`Documentation/resourc
 - 传入 `KCFLAGS="-fno-PIE"`，规避 Debian/Ubuntu 交叉工具链默认 PIE 导致的链接问题
 
 
+## boot.img 打包（可刷产物）
+
+内核树只产出 `Image` / `Image.gz` / `Image.gz-dtb`，`boot.img` 是 Android 的容器格式，需要 ramdisk、cmdline、地址参数、dtb 与签名。本仓库自带一个不依赖外部工具的封装器把它补齐：
+
+- `bootimg/bootimg.py`：解析/解包/重打包 boot header v0/v1/v2
+- `bootimg/stock-payload.bin`（1,667,072 B）：原厂 `boot.img` 从 ramdisk 起始到有效数据末尾的**逐字节**拷贝，含 ramdisk、second、未文档化的对齐区与 dtb 容器
+- `bootimg/bootmeta.json`：原镜像 header 的全部字段（page_size 4096、header v2、kernel_addr 0x1000000、ramdisk_addr 0x0、second_addr 0xf00000、tags_addr 0x100、dtb_addr 0x1f00000、os_version 335544642、cmdline 原文）以及 payload 的 sha256
+
+打包只替换内核：`python3 bootimg/bootimg.py repack-from-payload dist/boot.img out/arch/arm64/boot/Image.gz --payload bootimg/stock-payload.bin --meta bootimg/bootmeta.json --pad 67108864`。
+
+自检依据：用原厂内核走同一条路径重打包，第一页之后与原镜像**逐字节一致**（仅 header 里的 `id` 字段不同，该字段是 sha1 摘要，bootloader 不校验）。原厂镜像 sha256 = `a97366fb3cca0d3f3e0e00a561ce04ac72517c596cf26b3506ccd8d7b971f4eb`。
+
+注意：原厂内核是 `4.9.186-perf+`（构建标签 `KUNLUN2_Q_ST_SECURE`，Android Q 时代），本树是 `4.9.317`；原厂 ramdisk 为 32 KB 空 cpio，`second` 399,336 B，dtb 容器 1,232,336 B。
+
 ## 已知风险 / 未验证项
 
 - **未在本机编译**（按约定由 GitHub Actions 编译），CI 结果是第一手编译证据。首轮用 GCC 11 失败于 vendor 驱动的 `-Werror`，现改用 GCC 9.4（见上）；若再报错，仍优先怀疑工具链/老代码，而非补丁。
