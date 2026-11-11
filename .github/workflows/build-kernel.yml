@@ -37,7 +37,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
-            kmod cpio xz-utils zstd gcc-aarch64-linux-gnu
+            kmod cpio xz-utils zstd gcc-aarch64-linux-gnu python3
           # 4.9 vendor drivers carry their own -Werror; GCC 11+ promotes new
           # warnings (-Warray-parameter, ...) to errors, GCC 9 does not.
           aarch64-linux-gnu-gcc --version | head -1
