@@ -20,12 +20,21 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: ubuntu:20.04
+      # 容器的内建 DNS 转发在本 runner 上解析不了 archive.ubuntu.com，显式给公共/Azure DNS
+      options: --dns 8.8.8.8 --dns 168.63.129.16
     timeout-minutes: 300
     steps:
-      - name: Prepare container (git is required by actions/checkout)
+      - name: Prepare container (DNS + git, required by actions/checkout)
         run: |
+          set -x
+          cat /etc/resolv.conf
+          getent hosts archive.ubuntu.com || echo "dns-still-broken"
+          printf 'nameserver 8.8.8.8\nnameserver 168.63.129.16\n' > /etc/resolv.conf || true
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update
+          for i in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update && break
+            echo "apt-get update attempt $i failed"; sleep 5
+          done
           apt-get install -y --no-install-recommends git ca-certificates
           git --version
 
