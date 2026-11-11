@@ -1,0 +1,125 @@
+name: "Build kunlun2 Android 9 kernel (droidspaces-android9 - Droidspaces v6.6.0)"
+
+# 基线：Lenovo ZUI 11 / Android 9 (Pie) 内核源码 Linux 4.9.112（kunlun2 = Lenovo Z6 Youth / Z6 Lite, L38111）
+# 产物：可直接 fastboot flash boot 的 boot.img（用机主提供的原厂 boot.img 参数封装，只替换内核段）
+
+on:
+  push:
+    branches: [ droidspaces-android9 ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:20.04
+    timeout-minutes: 300
+    steps:
+      - name: Prepare container (git is required by actions/checkout)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+          git --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install toolchain (GCC 9.4 aarch64 cross)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            kmod cpio xz-utils zstd gcc-aarch64-linux-gnu python3
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Generate kunlun2 defconfig
+        run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out kunlun2_defconfig
+
+      - name: Assert Droidspaces config symbols (fail closed)
+        run: |
+          set -eu
+          missing=0
+          for c in \
+            SYSVIPC POSIX_MQUEUE IPC_NS UTS_NS PID_NS USER_NS \
+            SECCOMP SECCOMP_FILTER \
+            CGROUPS CGROUP_DEVICE CGROUP_PIDS MEMCG CGROUP_SCHED FAIR_GROUP_SCHED \
+            CGROUP_FREEZER CGROUP_NET_PRIO \
+            DEVTMPFS OVERLAY_FS TMPFS_POSIX_ACL TMPFS_XATTR \
+            NET_NS VETH BRIDGE \
+            NF_TABLES IP_NF_TARGET_MASQUERADE NF_NAT_REDIRECT \
+            IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES IP_SET NETFILTER_XT_SET \
+            IP_NF_TARGET_REJECT NF_NAT_IPV4 NF_CONNTRACK_IPV4
+          do
+            if grep -qx "CONFIG_$c=y" out/.config; then
+              echo "ok      CONFIG_$c=y"
+            else
+              echo "MISSING CONFIG_$c=y  ->  $(grep -E "^(CONFIG_$c=|# CONFIG_$c is not set)" out/.config || echo '<symbol absent>')"
+              missing=$((missing+1))
+            fi
+          done
+          test "$missing" -eq 0
+          # 与原厂内核 4.9.112-perf+ 的 vermagic 对齐，否则 /vendor 下的原厂 .ko 全部加载失败
+          grep -qx 'CONFIG_LOCALVERSION="-perf+"' out/.config
+          # 原厂 .ko 由 Lenovo 私钥签名，自编内核内嵌自己的公钥，必须关掉强制校验
+          grep -qx '# CONFIG_MODULE_SIG_FORCE is not set' out/.config
+
+      - name: Build Image.gz
+        run: |
+          # 4.9 时代的 vendor 代码带 -Werror，GCC 9 的新告警会直接变错误：用 -Wno-error 压掉告警，
+          # 只让真正的 error 失败。-fno-PIE 是 4.9 arm64 在较新 GCC 上的老问题。
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" \
+               KCFLAGS="-fno-PIE -Wno-error" Image.gz
+
+      - name: Build modules (best effort, artifact only)
+        continue-on-error: true
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" \
+               KCFLAGS="-fno-PIE -Wno-error" modules
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp out/arch/arm64/boot/Image.gz dist/Image.gz
+          cp out/.config dist/kunlun2-defconfig.resolved
+          cat dist/Image.gz bootimg/stock-dtb.bin > dist/Image.gz-dtb
+          ls -l dist
+
+      # 用机主提供的原厂 boot.img 参数（header v1 / page 4096 / addr / cmdline / os_version）
+      # 封装新内核，并保留原厂 DTB 表与 AppendVBMeta 结构、按新长度重算 AVB hash descriptor。
+      - name: Pack flashable boot.img
+        run: |
+          python3 bootimg/bootimg.py pack-pie dist/boot.img dist/Image.gz
+
+      - name: Verify boot.img (header / AVB / DTB assertions)
+        run: |
+          python3 bootimg/bootimg.py verify dist/boot.img
+          python3 bootimg/bootimg.py info dist/boot.img
+
+      - name: Collect modules (if the best-effort build produced any)
+        if: always()
+        run: |
+          find out -name '*.ko' -print0 2>/dev/null | tar --null -czf dist/modules-4.9.112-perf+.tar.gz -T - || true
+          ls -l dist
+
+      - name: Checksums
+        run: |
+          cd dist && sha256sum * | tee SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-android9-kunlun2-4.9.112
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
