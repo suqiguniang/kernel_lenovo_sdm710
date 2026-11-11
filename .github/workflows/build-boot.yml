@@ -1,0 +1,152 @@
+name: "Build kunlun2 boot.img (Droidspaces v6.6.0 @ PE eleven)"
+
+# Branch list is explicit on purpose: a new working branch must be added here,
+# not inherited through a wildcard.
+on:
+  push:
+    branches: [ droidspaces-eleven ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:20.04
+    timeout-minutes: 300
+    steps:
+      - name: Prepare container (checkout needs git inside the image)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+          git --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            kmod cpio xz-utils lz4 zstd gcc-aarch64-linux-gnu python3
+          # GCC 9 (focal default) matches this kernel's vintage: 4.9 vendor
+          # drivers carry their own -Werror, and GCC 11+ promotes new warnings
+          # (-Warray-parameter, stricter -Wmaybe-uninitialized) to errors.
+          aarch64-linux-gnu-gcc --version | head -1
+
+      # Fails before the 40-minute compile if the packer ever stops being
+      # byte-lossless against the stock image.
+      - name: Self-test boot.img packer (stock round-trip)
+        run: python3 bootimg/bootimg.py selftest --assets bootimg
+
+      - name: Generate kunlun2 defconfig
+        run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out kunlun2_defconfig
+
+      - name: Assert Droidspaces requirements in the resolved .config
+        run: |
+          set -eu
+          python3 tools/merge-config-fragment.py \
+            arch/arm64/configs/droidspaces-fragment.config \
+            arch/arm64/configs/kunlun2_defconfig --check
+          fail=0
+          while read -r sym; do
+            [ -z "$sym" ] && continue
+            case "$sym" in \#*) continue ;; esac
+            case "$sym" in
+              \!*)
+                s=${sym#!}
+                if grep -qx "# CONFIG_$s is not set" out/.config; then
+                  echo "ok   CONFIG_$s is not set"
+                else
+                  echo "FAIL CONFIG_$s must be OFF: $(grep -E "^(CONFIG_$s=|# CONFIG_$s )" out/.config || echo '<absent>')"
+                  fail=1
+                fi
+                ;;
+              *)
+                if grep -qx "CONFIG_$sym=y" out/.config; then
+                  echo "ok   CONFIG_$sym=y"
+                else
+                  echo "FAIL CONFIG_$sym != y: $(grep -E "^(CONFIG_$sym=|# CONFIG_$sym )" out/.config || echo '<absent>')"
+                  fail=1
+                fi
+                ;;
+            esac
+          done < tools/required-config.txt
+          echo "modules built as =m: $(grep -c '=m$' out/.config)"
+          [ "$fail" -eq 0 ]
+
+      - name: Build Image.gz
+        run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" KCFLAGS="-fno-PIE" Image.gz
+
+      - name: Pack flashable boot.img
+        run: |
+          set -eu
+          mkdir -p dist
+          DTB_SHA=$(python3 -c "import json;print(json.load(open('bootimg/bootmeta.json'))['appended_dtb_sha256'])")
+          python3 bootimg/bootimg.py pack \
+            --template-header bootimg/header-page.bin \
+            --kernel out/arch/arm64/boot/Image.gz \
+            --append-dtb bootimg/appended-dtb.bin \
+            --out dist/boot.img \
+            --partition-size 67108864
+          # header params must equal stock, appended DTBs must be untouched,
+          # and the file must fill the partition exactly
+          python3 bootimg/bootimg.py verify dist/boot.img \
+            --template-header bootimg/header-page.bin \
+            --partition-size 67108864 \
+            --expect-dtb-sha256 "$DTB_SHA"
+
+      - name: Collect artifacts
+        run: |
+          set -eu
+          cp out/arch/arm64/boot/Image.gz dist/
+          [ -f out/arch/arm64/boot/Image ] && cp out/arch/arm64/boot/Image dist/ || true
+          cp out/.config dist/kunlun2-defconfig.resolved
+          {
+            echo "repo      : ${{ github.repository }}"
+            echo "branch    : ${{ github.ref_name }}"
+            echo "commit    : ${{ github.sha }}"
+            echo "run       : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "kernel    : $(grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) = ' Makefile | tr -d ' ' | tr '\n' ' ')"
+            echo "localver  : $(grep -m1 '^CONFIG_LOCALVERSION=' out/.config)"
+            echo "toolchain : $(aarch64-linux-gnu-gcc --version | head -1)"
+            echo
+            echo "boot.img is header v0 + Image.gz + the stock appended DTBs,"
+            echo "padded to the 67108864-byte boot partition. AVB structures are"
+            echo "not carried over (the stock vbmeta is unsigned; see"
+            echo "KERNEL-INTEGRATION.md)."
+            echo
+            echo "--- sha256 ---"
+            ( cd dist && sha256sum * )
+          } > dist/BUILD-INFO.txt
+          ls -l dist
+          cat dist/BUILD-INFO.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-eleven-kunlun2-boot-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish boot.img as a release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: boot-eleven-${{ github.run_number }}
+          name: "kunlun2 boot.img — Droidspaces v6.6.0 (PE eleven) run ${{ github.run_number }}"
+          body_path: dist/BUILD-INFO.txt
+          files: |
+            dist/boot.img
+          fail_on_unmatched_files: true
