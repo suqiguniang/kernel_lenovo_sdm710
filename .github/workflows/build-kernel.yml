@@ -88,15 +88,18 @@ jobs:
 
       - name: Build Image.gz
         run: |
-          # 4.9 时代的 vendor 代码带 -Werror，GCC 9 的新告警会直接变错误：用 -Wno-error 压掉告警，
-          # 只让真正的 error 失败。-fno-PIE 是 4.9 arm64 在较新 GCC 上的老问题。
+          # 本树的 Makefile 把 CC 包成 scripts/gcc-wrapper.py（#!/usr/bin/env python2，且"遇到新告警就中止"），
+          # 容器里没有 python2，而且它的语义与现代 GCC 冲突：直接 CC=<cross gcc> 绕过 wrapper。
+          # 4.9 时代 vendor 代码带 -Werror，GCC 9 的新告警会变成错误：-Wno-error 只让真正的 error 失败。
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" \
+               CC=aarch64-linux-gnu-gcc \
                KCFLAGS="-fno-PIE -Wno-error" Image.gz
 
       - name: Build modules (best effort, artifact only)
         continue-on-error: true
         run: |
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j"$(nproc)" \
+               CC=aarch64-linux-gnu-gcc \
                KCFLAGS="-fno-PIE -Wno-error" modules
 
       - name: Collect artifacts
@@ -121,8 +124,13 @@ jobs:
       - name: Collect modules (if the best-effort build produced any)
         if: always()
         run: |
-          find out -name '*.ko' -print0 2>/dev/null | tar --null -czf dist/modules-4.9.112-perf+.tar.gz -T - || true
-          ls -l dist
+          mkdir -p dist
+          if find out -name '*.ko' -print -quit 2>/dev/null | grep -q .; then
+            find out -name '*.ko' -print0 | tar --null -czf dist/modules-4.9.112-perf+.tar.gz -T -
+          else
+            echo "no modules built (best-effort step) - skipped"
+          fi
+          ls -l dist || true
 
       - name: Checksums
         run: |
