@@ -19,11 +19,12 @@ Lenovo Z6 Youth（L38111 / kunlun2）PixelExperience（Android 11）内核，加
 - commit：`cff50fa04d50472b607ba6822e8bf482b19cd427`（tag `v6.6.0`）
 - 依据：`Documentation/Kernel-Configuration.md` → *Configuring Non-GKI Kernels (Legacy Kernels)*
 
-对内核侧只要求**配置项**与（可选的）两个补丁，不需要引入任何上游代码文件，因此本分支不改内核源码，只改 defconfig、加打包工具与 CI。
+对内核侧只要求**配置项**与（可选的）两个补丁，不需要引入任何上游代码文件。因此本分支的内核侧改动只有 defconfig 与一行构建规则（`kernel/Makefile` 的 IKCONFIG 依赖，见下文），其余是打包工具与 CI。
 
 ## 已落地的改动
 
 ```
+kernel/Makefile                                  # IKCONFIG 改回内嵌真实 .config（见「IKCONFIG」节）
 arch/arm64/configs/droidspaces-fragment.config   # 片段原文（唯一事实来源）
 arch/arm64/configs/kunlun2_defconfig             # 按片段确定性合并后的结果
 tools/merge-config-fragment.py                   # 幂等合并器（--check 供 CI 断言）
@@ -85,7 +86,7 @@ Droidspaces v6.6.0 为 non-GKI 内核提供两个补丁（`Documentation/resourc
 由此得出两条打包策略：
 
 1. **DTB 不重编，逐字节沿用原厂**。本树 `arch/arm64/boot/dts/qcom/Makefile` 只有 `sdm710-qrd-sku2-overlay.dtbo` 这类 overlay 条目，没有任何 `lenovo-kunlun2.dtb` 的 `dtb-$(CONFIG_ARCH_SDM670)` 规则；kunlun2 的设备树在独立仓库。重编出来的 dtb 与 ROM 的 dtbo 组合未必匹配，沿用原厂 8 个 DTB 是唯一可追溯的做法。
-2. **不携带 AVB**。原厂 vbmeta 本身未签名（见上），设备必须解锁才能刷机；重打包后镜像变长，vbmeta 的 `image_size=0xC03000` 摘要必然失效，且无法用厂商密钥重签。因此输出镜像把 vbmeta 区与 footer 全部置零，整分区写满 64 MiB——刷入后该分区就是「无 AVB 结构」状态，由解锁的 bootloader 直接引导，行为确定（而不是留一个指向新内核字节的失效 footer）。
+2. **不携带 AVB**。原厂 vbmeta 本身未签名（见上），设备必须解锁才能刷机；重打包后镜像变长，vbmeta 的 `image_size=0xC03000` 摘要必然失效，且无法用厂商密钥重签。因此输出镜像把分区尾部（AVB footer 所在 64 B）以及内核载荷之后的空间全部置零，整分区写满 64 MiB——刷入后该分区就是「无 AVB footer」状态，由解锁的 bootloader 直接引导，行为确定（而不是留一个指向新内核字节的失效 footer）。原 vbmeta 所在的 `0xC03000` 已被新内核载荷覆盖，这也是「不保留 AVB」的直接后果：该偏移在内核变大后不再具有任何结构意义。
 
 ## 打包器自检（可重复执行）
 
@@ -130,10 +131,56 @@ fastboot reboot
 
 刷入后在 Droidspaces App 里跑 *Settings → Requirements → Check Requirements*，或终端 `su -c droidspaces check`。
 
+## IKCONFIG：本树内嵌的是 `arch/arm64/configs/defconfig`，不是构建配置
+
+首次构建后从产出的 `Image` 里抽 IKCONFIG 块核对，抽到的是 `CONFIG_LOCALVERSION="-perf"`、`MEMCG` 未开、5,501 行的配置——与本次构建的 `.config`（`-Fratm`、`MEMCG=y`、5,535 行）完全不符。逐层查到根因：
+
+- 本树 `kernel/Makefile` 被 vendor 改成了 `$(obj)/config_data.gz: arch/arm64/configs/defconfig FORCE`，而主线 4.9 是 `$(obj)/config_data.gz: $(KCONFIG_CONFIG) FORCE`
+- 因此 `CONFIG_IKCONFIG` 内嵌的 `/proc/config.gz` 是**仓库里那份参考 defconfig**（5,501 行，`sha256 b529d56d…1d80c`），与这次实际编译用的 `.config` 无关
+- 实证：从 `Image` 抽出的 146,046 B 配置块解压后与 `arch/arm64/configs/defconfig` **逐字节相同**（`diff` 0 行）
+
+这不是「不影响开机」的小事：排查容器功能时 `zcat /proc/config.gz | grep MEMCG` 会给出相反答案，droidspaces 一类工具若读 `/proc/config.gz` 判断能力也会被误导。本分支把该依赖改回 `$(KCONFIG_CONFIG)`，重建后 `/proc/config.gz` 即等于构建真值。改动仅影响内嵌配置块，不碰任何编译产物逻辑。
+
+## 产物核验（配置层 → 镜像层 → 二进制层）
+
+**配置层**（CI，`out/.config`，5,535 行）：`tools/required-config.txt` 77 项断言全过；`ANDROID_PARANOID_NETWORK` 为 `is not set`；`=m` 计数 0（全内建）。
+
+**镜像层**（本机，run 2 的 Release 资产 `boot.img`，下载后 sha256 与 `BUILD-INFO.txt` 一致）：`2e5e1e9e…29200`，67,108,864 B
+
+| 检查 | 结果 |
+|---|---|
+| header 参数（`kernel_addr`/`ramdisk_addr`/`second_addr`/`tags_addr`/`page_size`/`cmdline`/`name`/header 版本） | 与原厂逐项相等 |
+| 追加 DTB | `sha256 7cd9cc55…f8fc41`，与原厂一致（8 个 DTB，1,221,563 B） |
+| 载荷 | `Image.gz` 16,182,571 B + DTB 1,221,563 B = 17,404,134 B；gz 的 sha256 与产物 `Image.gz` 一致，解压后 sha256 与产物 `Image` 一致 |
+| 尾部 | 载荷之后全零，末 64 B 全零（无 AVB footer） |
+| 内核 banner | `Linux version 4.9.268-Fratm (gcc version 9.4.0 (Ubuntu 9.4.0-1ubuntu1~20.04.2))` |
+
+**二进制层**（在 `Image` 里找「只有开了该选项才存在的字符串」，用同机同容器的原厂 4.9.112 镜像做阴性对照）：
+
+| 探针字符串 | 来源 | 本产物 | 原厂 4.9.112 |
+|---|---|---|---|
+| `shmmax`、`msgmnb` | `CONFIG_SYSVIPC` 的 sysctl | 1 / 1 | 0 |
+| `oom_control` | `CONFIG_MEMCG` 的 cgroup 文件 | 2 | 0 |
+| `max_user_namespaces` | `CONFIG_USER_NS` 的 sysctl | 1 | — |
+| `nf_tables` | `CONFIG_NF_TABLES` | 6 | 0 |
+| `ip_set` / `hash:ip` | `CONFIG_IP_SET` | 12 / 1 | 2 / — |
+
+## 关于用户提供的「原版 boot」
+
+提供的 `boot.img`（`sha256 ed1d745e…2a99`）内核 banner 是 `4.9.112-perf+ (buildslave@byws28) (gcc 4.9.x) 2019-06-07`，内嵌配置 `-perf`、5,501 行——与仓库里 `kernel_lenovo_sdm710-pie`（4.9.112、`CONFIG_LOCALVERSION="-perf"`）同一条线，即**联想原厂 Pie 内核**，不是 PE eleven 的内核。
+
+本产物沿用的是它的**容器参数**（header 布局、加载地址、cmdline、8 个 DTB、分区大小），内核换成 PE eleven 树的 4.9.268。也就是说：镜像结构对齐你给的这份 boot，内核来源是 PE eleven 树。若设备当前跑的是 PE eleven 而不是 Pie，PE 自己的 boot.img 才是更合适的模板（cmdline / ramdisk 可能不同），替换方式只需一条命令：
+
+```sh
+python3 bootimg/bootimg.py import-stock <PE的boot.img> --out bootimg/
+# 然后重跑 CI 即可，header 参数与 DTB 会自动取自新模板
+```
+
 ## 已知风险 / 未验证项
 
 - **未做真机验证**：CI 绿只代表编译与打包通过，不等于可刷机、能开机。首次刷入前务必留好原 boot 分区镜像。
 - **AVB 结构被移除**：见上，依赖解锁状态。若设备处于锁定状态，本镜像不可刷也不可引导。
-- **cmdline/地址参数沿用原厂 PE 镜像**（`buildvariant=user` 等）。若目标 ROM 不是该 PE eleven 版本的同代构建，cmdline 语义可能不一致（例如 `init` 的 `androidboot.*` 组合）。
+- **cmdline/地址参数沿用用户提供的原厂 boot**（`buildvariant=user`、`androidboot.configfs=true` 等，见「关于用户提供的『原版 boot』」）。目标 ROM 若不认这套 `androidboot.*`，语义会不一致；换模板只需重跑 `import-stock`。
+- **内核版本跨度大**：4.9.112（原厂 Pie）→ 4.9.268（PE eleven）。同 SoC、同 DTB 组，理论上可引导，但 userspace/vendor 侧的 SELinux 策略、内核头与 HAL 期望值都是按各自 ROM 的配套内核调的，跨代组合属未验证区。
 - **容器内联网**依赖 `CONFIG_ANDROID_PARANOID_NETWORK=n`，代价是放开 Android 基于 AID 组的 socket 创建限制，属功能换安全的取舍。
 - 老内核 + 现代容器工具：nftables 可用但功能面窄于 5.x；Docker/Podman 的 `BPF_CGROUP_DEVICE` 在本代内核不存在，需要 `cgroupfs` 驱动 + `vfs` 存储驱动。
