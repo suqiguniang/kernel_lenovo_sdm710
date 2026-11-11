@@ -139,20 +139,21 @@ fastboot reboot
 - 因此 `CONFIG_IKCONFIG` 内嵌的 `/proc/config.gz` 是**仓库里那份参考 defconfig**（5,501 行，`sha256 b529d56d…1d80c`），与这次实际编译用的 `.config` 无关
 - 实证：从 `Image` 抽出的 146,046 B 配置块解压后与 `arch/arm64/configs/defconfig` **逐字节相同**（`diff` 0 行）
 
-这不是「不影响开机」的小事：排查容器功能时 `zcat /proc/config.gz | grep MEMCG` 会给出相反答案，droidspaces 一类工具若读 `/proc/config.gz` 判断能力也会被误导。本分支把该依赖改回 `$(KCONFIG_CONFIG)`，重建后 `/proc/config.gz` 即等于构建真值。改动仅影响内嵌配置块，不碰任何编译产物逻辑。
+这不是「不影响开机」的小事：排查容器功能时 `zcat /proc/config.gz | grep MEMCG` 会给出相反答案，droidspaces 一类工具若读 `/proc/config.gz` 判断能力也会被误导。本分支把该依赖改回 `$(KCONFIG_CONFIG)`，改动仅影响内嵌配置块，不碰任何编译产物逻辑。重建（run 3）后实测：产出的 `Image` 里 IKCONFIG 块解压后 5,535 行、`-Fratm`、`MEMCG/USER_NS/SYSVIPC/PID_NS=y`，sha256 `67a55b2571e956c9f8a20beaf2c9ee9f090a1e176967c6a4aafe00a2de801e47`，与 `out/.config`、CI 上传的 `kunlun2-defconfig.resolved` 三者一致。
 
 ## 产物核验（配置层 → 镜像层 → 二进制层）
 
 **配置层**（CI，`out/.config`，5,535 行）：`tools/required-config.txt` 77 项断言全过；`ANDROID_PARANOID_NETWORK` 为 `is not set`；`=m` 计数 0（全内建）。
 
-**镜像层**（本机，run 2 的 Release 资产 `boot.img`，下载后 sha256 与 `BUILD-INFO.txt` 一致）：`2e5e1e9e…29200`，67,108,864 B
+**镜像层**（本机，run 3 / Release `boot-eleven-3` 的 `boot.img`，下载后 sha256 与 `BUILD-INFO.txt` 一致）：`61f5741961fb…1930cb`，67,108,864 B
 
 | 检查 | 结果 |
 |---|---|
 | header 参数（`kernel_addr`/`ramdisk_addr`/`second_addr`/`tags_addr`/`page_size`/`cmdline`/`name`/header 版本） | 与原厂逐项相等 |
 | 追加 DTB | `sha256 7cd9cc55…f8fc41`，与原厂一致（8 个 DTB，1,221,563 B） |
-| 载荷 | `Image.gz` 16,182,571 B + DTB 1,221,563 B = 17,404,134 B；gz 的 sha256 与产物 `Image.gz` 一致，解压后 sha256 与产物 `Image` 一致 |
+| 载荷 | `Image.gz` 16,183,885 B + DTB 1,221,563 B = 17,405,448 B；gz 的 sha256 与产物 `Image.gz` 一致，解压后 sha256 与产物 `Image` 一致 |
 | 尾部 | 载荷之后全零，末 64 B 全零（无 AVB footer） |
+| `/proc/config.gz`（IKCONFIG 块） | 5,535 行、`-Fratm`、`MEMCG/USER_NS/SYSVIPC/PID_NS=y`，sha256 `67a55b25…801e47` = 构建用的 `.config` = CI 产出的 `kunlun2-defconfig.resolved` |
 | 内核 banner | `Linux version 4.9.268-Fratm (gcc version 9.4.0 (Ubuntu 9.4.0-1ubuntu1~20.04.2))` |
 
 **二进制层**（在 `Image` 里找「只有开了该选项才存在的字符串」，用同机同容器的原厂 4.9.112 镜像做阴性对照）：
