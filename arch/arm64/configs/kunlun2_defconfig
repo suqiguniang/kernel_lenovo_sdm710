@@ -5566,3 +5566,7 @@ CONFIG_NETFILTER_XT_SET=y
 CONFIG_NETFILTER_NETLINK_QUEUE=y
 CONFIG_NETFILTER_NETLINK_LOG=y
 CONFIG_NETFILTER_XT_TARGET_NFLOG=y
+
+# 4.9 的 Kconfig 互斥：QTAGUID 依赖 OWNER=n，本配置保 OWNER，故必须显式关掉 qtaguid 扩展，
+# 否则 vmlinux 链接时 xt_qtaguid_ext.o 引用 qtaguid_debug_mask 会 undefined reference。
+# CONFIG_NETFILTER_XT_MATCH_QTAGUID_EXT is not set
