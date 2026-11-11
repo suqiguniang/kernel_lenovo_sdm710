@@ -20,9 +20,12 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: ubuntu:20.04
-      # 该 runner 上容器网络内的 DNS（127.0.0.11 转发 + 8.8.8.8/168.63.129.16）都解析不了域名，
-      # 容器内 apt 直接失效；共用宿主机网络命名空间后走宿主机解析器。
-      options: --network host
+      # 该 runner 上容器网络内的 DNS 完全不可用（127.0.0.11 转发与 8.8.8.8 / 168.63.129.16 都超时），
+      # --network host 又与 runner 自己的 --network 冲突（docker create 125）。
+      # 因此给 apt 用到的两个主机名直接钉 IP（Canonical CDN，HTTP 直连已在本机验证 200）。
+      options: >-
+        --add-host archive.ubuntu.com:91.189.90.12
+        --add-host security.ubuntu.com:91.189.90.12
     timeout-minutes: 300
     steps:
       - name: Prepare container (DNS + git, required by actions/checkout)
