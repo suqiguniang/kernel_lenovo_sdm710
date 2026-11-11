@@ -20,16 +20,16 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: ubuntu:20.04
-      # 容器的内建 DNS 转发在本 runner 上解析不了 archive.ubuntu.com，显式给公共/Azure DNS
-      options: --dns 8.8.8.8 --dns 168.63.129.16
+      # 该 runner 上容器网络内的 DNS（127.0.0.11 转发 + 8.8.8.8/168.63.129.16）都解析不了域名，
+      # 容器内 apt 直接失效；共用宿主机网络命名空间后走宿主机解析器。
+      options: --network host
     timeout-minutes: 300
     steps:
       - name: Prepare container (DNS + git, required by actions/checkout)
         run: |
           set -x
           cat /etc/resolv.conf
-          getent hosts archive.ubuntu.com || echo "dns-still-broken"
-          printf 'nameserver 8.8.8.8\nnameserver 168.63.129.16\n' > /etc/resolv.conf || true
+          getent hosts archive.ubuntu.com
           export DEBIAN_FRONTEND=noninteractive
           for i in 1 2 3; do
             apt-get -o Acquire::Retries=5 update && break
